@@ -37,6 +37,484 @@ let enemiesKilled = 0;
 let fireballsFired = 0;
 let accuracyPercentage = 0;
 
+let disableEnemies = false;
+//let disableEnemies = true;
+
+let enemySpawnRate = 0.015;
+
+// Add these global variables with your other global variables
+let bombs = [];
+let lastBombTime = 0;
+const BOMB_COOLDOWN = 1000; // Cooldown between bombs (1 second)
+const BOMB_GRAVITY = 0.011; // Gravity effect on bombs
+const BOMB_INITIAL_VELOCITY = -0.8; // Initial forward velocity for the bomb
+
+let bombsFired = 0;
+let bombsHit = 0;
+
+// Function to drop a bomb from player's ship
+// Modified dropBomb function using the custom bomb model
+function dropBomb() {
+    if (!spaceship || !isPlayerAlive || isGameOver) return;
+    
+    const now = Date.now();
+    if (now - lastBombTime < BOMB_COOLDOWN) return; // Enforce cooldown
+    lastBombTime = now;
+    
+    // Count bomb as a shot fired for overall accuracy
+    fireballsFired++;
+    
+    // Create the custom bomb with fins
+    const bomb = createCustomBomb();
+    
+    // Scale bomb to appropriate size for the game
+    bomb.scale.set(1.2, 1.2, -1.2);
+    
+    // Position the bomb below the spaceship
+    bomb.position.copy(spaceship.position);
+    bomb.position.y -= 2; // Below the ship
+    
+    // Add a red glowing light to the bomb
+    const glowGeometry = new THREE.SphereGeometry(1.5, 16, 16);
+    const glowMaterial = new THREE.MeshBasicMaterial({
+        color: 0xFF0000,
+        transparent: true,
+        opacity: 0.4
+    });
+    const glow = new THREE.Mesh(glowGeometry, glowMaterial);
+    bomb.add(glow);
+    
+    // Initial rotation - only slightly downward (10 degrees)
+    bomb.rotation.x = Math.PI * 0.05; // About 10 degrees
+    
+    // Add bomb-specific properties with increased forward velocity
+    bomb.userData.velocity = new THREE.Vector3(0, 0, BOMB_INITIAL_VELOCITY); // -3.0 forward velocity
+    bomb.userData.gravity = BOMB_GRAVITY;
+    bomb.userData.createdAt = now;
+    bomb.userData.initialRotation = bomb.rotation.x;
+    bomb.userData.targetRotation = - Math.PI / 2; // 90 degrees (fully downward) as target
+    bomb.userData.rotationSpeed = 0.01; // How quickly to adjust rotation
+    
+    // Add to scene and bombs array
+    scene.add(bomb);
+    bombs.push(bomb);
+    
+    // Visual feedback - make the ship bob slightly
+    const originalY = spaceship.position.y;
+    spaceship.position.y += 0.5;
+    setTimeout(() => {
+        if (spaceship) spaceship.position.y = originalY;
+    }, 150);
+}
+
+// Function to create a custom bomb mesh with fins
+function createCustomBomb() {
+    // Create a group to hold all bomb parts
+    const bombGroup = new THREE.Group();
+    
+    // Bomb body (sphere)
+    const sphereGeometry = new THREE.SphereGeometry(1, 32, 32);
+    const sphereMaterial = new THREE.MeshBasicMaterial({ color: 0x333333 });
+    const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+    bombGroup.add(sphere);
+    
+    // Create fins (X shape) using triangles
+    const finMaterial = new THREE.MeshBasicMaterial({ color: 0x444444, side: THREE.DoubleSide });
+    
+    // First triangle (top-right to bottom-left) - EXTENDED LENGTH
+    const triangle1Geometry = new THREE.BufferGeometry();
+    const triangle1Vertices = new Float32Array([
+      0, 0, 0,      // center point
+      1.2, 1.2, -3.0,  // top-right (same width, longer Z)
+      -1.2, -1.2, -3.0   // bottom-left (same width, longer Z)
+    ]);
+    triangle1Geometry.setAttribute('position', new THREE.BufferAttribute(triangle1Vertices, 3));
+    const triangle1 = new THREE.Mesh(triangle1Geometry, finMaterial);
+    
+    // Second triangle (top-left to bottom-right) - EXTENDED LENGTH
+    const triangle2Geometry = new THREE.BufferGeometry();
+    const triangle2Vertices = new Float32Array([
+      0, 0, 0,      // center point
+      -1.2, 1.2, -3.0,  // top-left (same width, longer Z)
+      1.2, -1.2, -3.0   // bottom-right (same width, longer Z)
+    ]);
+    triangle2Geometry.setAttribute('position', new THREE.BufferAttribute(triangle2Vertices, 3));
+    const triangle2 = new THREE.Mesh(triangle2Geometry, finMaterial);
+    
+    // Group the fins and position them behind the sphere
+    const finsGroup = new THREE.Group();
+    finsGroup.add(triangle1);
+    finsGroup.add(triangle2);
+    finsGroup.position.z = -1.0;
+    bombGroup.add(finsGroup);
+    
+    // Add a small cylinder for the bomb top (fuse holder)
+    const fuseHolderGeometry = new THREE.CylinderGeometry(0.2, 0.2, 0.3, 16);
+    const fuseHolderMaterial = new THREE.MeshBasicMaterial({ color: 0x222222 });
+    const fuseHolder = new THREE.Mesh(fuseHolderGeometry, fuseHolderMaterial);
+    fuseHolder.position.y = 1;
+    fuseHolder.rotation.x = Math.PI / 2;
+    bombGroup.add(fuseHolder);
+    
+    // Store references to parts that need to spin independently
+    bombGroup.userData.sphere = sphere;
+    bombGroup.userData.finsGroup = finsGroup;
+    bombGroup.userData.fuseHolder = fuseHolder;
+    bombGroup.userData.rotationSpeed = 0.05; // Increased from 0.01 for more noticeable spinning
+    
+    return bombGroup;
+}
+
+// Function to update bombs physics and check collisions
+// Updated updateBombs function to handle spinning
+function updateBombs() {
+    const now = Date.now();
+    const groundLevel = -19; // Ground level Y coordinate
+    
+    // Update each bomb
+    bombs = bombs.filter(bomb => {
+        // Apply gravity to velocity
+        bomb.userData.velocity.y -= bomb.userData.gravity;
+        
+        // Move bomb according to velocity
+        bomb.position.add(bomb.userData.velocity);
+        
+        // Calculate how vertical the velocity is (normalized from 0 to 1)
+        // As the bomb falls more vertically, this value approaches 1
+        const velocityDirection = new THREE.Vector3().copy(bomb.userData.velocity).normalize();
+        const verticalFactor = Math.abs(velocityDirection.y) / 
+            Math.sqrt(velocityDirection.x * velocityDirection.x + 
+                      velocityDirection.y * velocityDirection.y + 
+                      velocityDirection.z * velocityDirection.z);
+                      
+        // Dynamically adjust rotation to match velocity direction
+        // Use the verticalFactor to determine how much to rotate
+        // Map the verticalFactor (0 to 1) to rotation (initialRotation to targetRotation)
+        const newRotation = bomb.userData.initialRotation + 
+                          (bomb.userData.targetRotation - bomb.userData.initialRotation) * verticalFactor;
+        
+        // Apply the rotation
+        bomb.rotation.x = newRotation;
+        
+        // Spin the bomb parts (around their local axes)
+        if (bomb.userData.sphere) {
+            bomb.userData.sphere.rotation.z += bomb.userData.rotationSpeed;
+        }
+        if (bomb.userData.finsGroup) {
+            bomb.userData.finsGroup.rotation.z += bomb.userData.rotationSpeed;
+        }
+        if (bomb.userData.fuseHolder) {
+            bomb.userData.fuseHolder.rotation.y += bomb.userData.rotationSpeed;
+        }
+        
+        // Create smoke trail
+        if (Math.random() > 0.7) {
+            createBombTrail(bomb.position.clone());
+        }
+        
+        // Check if bomb hit the ground
+        if (bomb.position.y <= groundLevel) {
+            // Create explosion
+            createGroundExplosion(bomb.position);
+            
+            // Check for nearby tanks (splash damage)
+            checkBombSplashDamage(bomb.position);
+            
+            // Remove the bomb
+            scene.remove(bomb);
+            return false;
+        }
+        
+        // Check for direct hit with tanks
+        if (checkBombTankCollision(bomb)) {
+            // Remove the bomb (collision function handles the explosion)
+            scene.remove(bomb);
+            return false;
+        }
+        
+        // Remove bombs after a timeout (5 seconds) as a safety measure
+        if (now - bomb.userData.createdAt > 5000) {
+            scene.remove(bomb);
+            return false;
+        }
+        
+        return true;
+    });
+}
+
+// Create smoke trail for bombs
+function createBombTrail(position) {
+    const smokeGeometry = new THREE.SphereGeometry(0.5, 8, 8);
+    const smokeMaterial = new THREE.MeshBasicMaterial({
+        color: 0x888888,
+        transparent: true,
+        opacity: 0.7
+    });
+    const smoke = new THREE.Mesh(smokeGeometry, smokeMaterial);
+    smoke.position.copy(position);
+    
+    // Add some random offset to the smoke
+    smoke.position.x += (Math.random() - 0.5) * 0.5;
+    smoke.position.y += (Math.random() - 0.5) * 0.5;
+    smoke.position.z += (Math.random() - 0.5) * 0.5;
+    
+    scene.add(smoke);
+    
+    // Animate the smoke
+    let size = 1.0;
+    const animateSmoke = function() {
+        if (size <= 0) {
+            scene.remove(smoke);
+            return;
+        }
+        
+        size -= 0.05;
+        smoke.scale.set(size, size, size);
+        smoke.material.opacity -= 0.04;
+        
+        requestAnimationFrame(animateSmoke);
+    };
+    
+    animateSmoke();
+}
+
+// Create a larger ground explosion
+function createGroundExplosion(position) {
+    // Fix Y position to be at ground level
+    const groundPos = position.clone();
+    groundPos.y = -19; // Ground level
+    
+    // Create main explosion
+    const explosion = createExplosion(groundPos, true);
+    
+    // Create ground debris particles
+    const debrisCount = 20;
+    for (let i = 0; i < debrisCount; i++) {
+        const debrisGeometry = new THREE.BoxGeometry(
+            Math.random() * 0.5 + 0.2,
+            Math.random() * 0.5 + 0.2,
+            Math.random() * 0.5 + 0.2
+        );
+        const debrisMaterial = new THREE.MeshBasicMaterial({ color: 0xA52A2A }); // Brown
+        const debris = new THREE.Mesh(debrisGeometry, debrisMaterial);
+        
+        // Position at explosion center
+        debris.position.copy(groundPos);
+        
+        // Random velocity mainly upward and outward
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Math.random() * 1.0 + 0.5;
+        const upSpeed = Math.random() * 1.0 + 0.5;
+        
+        debris.userData = {
+            velocity: new THREE.Vector3(
+                Math.cos(angle) * speed,
+                upSpeed,
+                Math.sin(angle) * speed
+            ),
+            gravity: 0.1,
+            rotationSpeed: new THREE.Vector3(
+                Math.random() * 0.2 - 0.1,
+                Math.random() * 0.2 - 0.1,
+                Math.random() * 0.2 - 0.1
+            )
+        };
+        
+        scene.add(debris);
+        
+        // Animate each debris piece
+        const animateDebris = function() {
+            // Apply gravity
+            debris.userData.velocity.y -= debris.userData.gravity;
+            
+            // Update position
+            debris.position.add(debris.userData.velocity);
+            
+            // Add rotation
+            debris.rotation.x += debris.userData.rotationSpeed.x;
+            debris.rotation.y += debris.userData.rotationSpeed.y;
+            debris.rotation.z += debris.userData.rotationSpeed.z;
+            
+            // Remove if below ground or after a timeout
+            if (debris.position.y < -19) {
+                scene.remove(debris);
+                return;
+            }
+            
+            requestAnimationFrame(animateDebris);
+        };
+        
+        animateDebris();
+    }
+    
+    // Create a shockwave ring
+    const ringGeometry = new THREE.RingGeometry(0.5, 2, 32);
+    const ringMaterial = new THREE.MeshBasicMaterial({
+        color: 0xFF8C00,
+        transparent: true,
+        opacity: 0.7,
+        side: THREE.DoubleSide
+    });
+    const ring = new THREE.Mesh(ringGeometry, ringMaterial);
+    
+    // Position right above ground
+    ring.position.copy(groundPos);
+    ring.position.y += 0.1;
+    
+    // Rotate to be parallel to ground
+    ring.rotation.x = -Math.PI / 2;
+    
+    scene.add(ring);
+    
+    // Animate the ring expanding outward
+    const animateRing = function() {
+        ring.scale.x += 0.2;
+        ring.scale.y += 0.2;
+        ring.material.opacity -= 0.02;
+        
+        if (ring.material.opacity <= 0) {
+            scene.remove(ring);
+            return;
+        }
+        
+        requestAnimationFrame(animateRing);
+    };
+    
+    animateRing();
+}
+
+// Check for bomb collisions with tanks
+function checkBombTankCollision(bomb) {
+    for (let i = 0; i < tanks.length; i++) {
+        const tank = tanks[i];
+        const distance = bomb.position.distanceTo(tank.position);
+        
+        // If direct hit
+        if (distance < 5) {
+            // Create explosion
+            createExplosion(tank.position);
+
+
+        // Increment bombs hit counter
+        bombsHit++;
+            
+            // Add points
+            updateScore(20); // More points for bombing a tank
+            
+            // Increment enemies killed
+            enemiesKilled++;
+            
+            // Remove tank
+            scene.remove(tank);
+            
+            // Create a new tank to replace it
+            const newTank = createTank();
+            tanks[i] = newTank;
+            
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+// Check for splash damage to tanks
+function checkBombSplashDamage(bombPosition) {
+    const splashRadius = 15; // Splash damage radius
+    
+    for (let i = 0; i < tanks.length; i++) {
+        const tank = tanks[i];
+        const distance = bombPosition.distanceTo(tank.position);
+        
+        // If within splash radius
+        if (distance < splashRadius) {
+            // Create explosion
+            createExplosion(tank.position);
+            
+            // Add points (less for splash damage)
+            updateScore(10);
+            
+            // Increment enemies killed
+            enemiesKilled++;
+
+            bombsHit++;
+            
+            // Remove tank
+            scene.remove(tank);
+            
+            // Create a new tank to replace it
+            const newTank = createTank();
+            tanks[i] = newTank;
+        }
+    }
+}
+
+// Add keydown event for dropping bombs
+function setupBombControls() {
+    // Find the existing onKeyDown function and add 'c' key handling
+    const originalOnKeyDown = onKeyDown;
+    
+    // Create a new function that extends the original
+    window.onKeyDown = function(event) {
+        // Call the original function first
+        originalOnKeyDown(event);
+        
+        // Handle the C key for dropping bombs
+        if (event.key.toLowerCase() === 'c') {
+            dropBomb();
+        }
+    };
+    
+    // If on mobile, add a bomb button
+    if (isMobileDevice) {
+        addMobileBombButton();
+    }
+}
+
+// Add a bomb button for mobile devices
+function addMobileBombButton() {
+    // Create bomb button
+    const bombButton = document.createElement('div');
+    bombButton.style.position = 'absolute';
+    bombButton.style.bottom = '30px';
+    bombButton.style.left = '30px';
+    bombButton.style.width = '70px';
+    bombButton.style.height = '70px';
+    bombButton.style.borderRadius = '50%';
+    bombButton.style.backgroundColor = 'rgba(255, 0, 0, 0.3)';
+    bombButton.style.border = '2px solid rgba(255, 255, 255, 0.6)';
+    bombButton.style.boxShadow = '0 0 10px rgba(255, 0, 0, 0.5)';
+    bombButton.style.display = 'flex';
+    bombButton.style.justifyContent = 'center';
+    bombButton.style.alignItems = 'center';
+    bombButton.style.zIndex = '20';
+    
+    // Add bomb icon
+    const bombIcon = document.createElement('div');
+    bombIcon.innerHTML = '💣';
+    bombIcon.style.fontSize = '30px';
+    bombButton.appendChild(bombIcon);
+    
+    document.body.appendChild(bombButton);
+    
+    // Add touch event for bomb button
+    bombButton.addEventListener('touchstart', function(event) {
+        event.preventDefault();
+        dropBomb();
+        
+        // Visual feedback
+        bombButton.style.backgroundColor = 'rgba(255, 0, 0, 0.5)';
+        setTimeout(() => {
+            bombButton.style.backgroundColor = 'rgba(255, 0, 0, 0.3)';
+        }, 100);
+    }, false);
+}
+
+// Call this function as part of your initialization
+function initBombSystem() {
+    setupBombControls();
+}
+
 // Initialize game metrics when the game starts
 function initializeGameMetrics() {
     // Reset all metrics
@@ -324,10 +802,10 @@ function createTank() {
     turretFront.rotation.x = -Math.PI * 0.15;
     turretGroup.add(turretFront);
 
-    // Barrel group with 10 degree elevation
+    // Barrel group with some degree elevation
     const barrelGroup = new THREE.Group();
     barrelGroup.position.set(0, 0.35, 1.9);
-    barrelGroup.rotation.x = -Math.PI * (10 / 180); // 10 degrees up
+    barrelGroup.rotation.x = -Math.PI * (17 / 180); // 17 degrees up
     turretGroup.add(barrelGroup);
 
     // Main gun barrel
@@ -385,6 +863,10 @@ function createTank() {
     tank.userData.turretRotationSpeed = 0; //(Math.random() * 0.004) + 0.001; // Random rotation speed
     tank.userData.turretRotationDirection = Math.random() > 0.5 ? 1 : -1; // Random direction
 
+    // Add firing-related properties
+addTankFiringProperties(tank);
+
+
     // Add to scene
     scene.add(tank);
 
@@ -414,52 +896,157 @@ function initializeTanks() {
 function updateTanks() {
     // Current time for animations
     const now = Date.now();
-
+    
     // Check for tanks that need replacing
     const tanksToRemove = [];
-
+    
     // Update tank positions and check for removal
     for (let i = 0; i < tanks.length; i++) {
         const tank = tanks[i];
-
+        
         // Move tank forward with the ground
         tank.position.z += planeSpeed * 40;
-
-        // Animate turret rotation
-        if (now - tank.userData.lastTurretRotationTime > 3000) {
-            // Occasionally change direction
-            if (Math.random() > 0.7) {
+        
+        // Randomly rotate turret
+        if (now - tank.userData.lastTurretRotationTime > 2000) {
+            // Change turret rotation direction and speed
+            if (Math.random() > 0.6) {
                 tank.userData.turretRotationDirection *= -1;
                 tank.userData.turretRotationSpeed = (Math.random() * 0.004) + 0.001;
             }
+            
+            // Sometimes aim at player
+            if (spaceship && isPlayerAlive && Math.random() > 0.7) {
+                // Calculate direction to player
+                const toPlayer = new THREE.Vector3();
+                toPlayer.subVectors(spaceship.position, tank.position).normalize();
+                
+                // Calculate angle to player in the XZ plane
+                const angleToPlayer = Math.atan2(toPlayer.x, toPlayer.z);
+                
+                // Apply the angle as a rotation around Y axis
+                // Set turret to face player with some randomness
+                tank.userData.turret.rotation.y = angleToPlayer + (Math.random() * 0.2 - 0.1);
+            } else {
+                // Random rotation
+                tank.userData.turretRotationSpeed = (Math.random() * 0.004) + 0.001;
+            }
+            
             tank.userData.lastTurretRotationTime = now;
         }
-
-        // Apply turret rotation
-        tank.userData.turret.rotation.y +=
-            tank.userData.turretRotationSpeed *
-            tank.userData.turretRotationDirection;
-
+        
+        // Apply turret rotation (if not aiming at player)
+        if (now - tank.userData.lastTurretRotationTime > 500) {
+            tank.userData.turret.rotation.y += 
+                tank.userData.turretRotationSpeed * 
+                tank.userData.turretRotationDirection;
+        }
+        
+        // Tank firing logic
+        if (!tank.userData.lastFireTime) {
+            tank.userData.lastFireTime = now;
+        }
+        
+        const fireInterval = 2000 + Math.random() * 1000; // Random interval between 2-3 seconds
+        
+        // Only fire if tank is in range and in front of player camera
+        if (now - tank.userData.lastFireTime > fireInterval && 
+            tank.position.z < 0 && tank.position.z > -200) {
+            
+            // Increased chance to fire if aiming toward player
+            let shouldFire = Math.random() > 0.5;
+            
+            // If tank is relatively close, increase firing chance
+            if (tank.position.z > -80) {
+                shouldFire = Math.random() > 0.3;
+            }
+            
+            if (shouldFire) {
+                tankShootFireball(tank);
+                tank.userData.lastFireTime = now;
+            }
+        }
+        
         // Check if tank has passed the camera
         if (tank.position.z > 120) {
             tanksToRemove.push(i);
         }
     }
-
+    
     // Remove tanks that have passed the camera
     for (let i = tanksToRemove.length - 1; i >= 0; i--) {
         const index = tanksToRemove[i];
         const tank = tanks[index];
-
+        
         // Remove from scene
         scene.remove(tank);
-
+        
         // Create a new tank to replace it
         const newTank = createTank();
-
+        
         // Replace in the array
         tanks[index] = newTank;
     }
+}
+
+function updateEnemyFireballs() {
+    const now = Date.now();
+    
+    // Update enemy fireballs
+    enemyFireballs = enemyFireballs.filter(fireball => {
+        const age = now - fireball.createdAt;
+        if (age > 2000) {
+            scene.remove(fireball.mesh);
+            return false;
+        }
+        
+        // If this is a tank projectile, use the stored direction
+        if (fireball.isTankProjectile) {
+            // Apply the direction vector with speed
+            const speed = 0.1;
+            fireball.mesh.position.add(
+                fireball.direction.clone().multiplyScalar(speed)
+            );
+        } else {
+            // Regular enemy fireball movement (toward player)
+            fireball.mesh.position.z += 3.15;
+        }
+        
+        // Add some trail/glow effect for enemy fireballs
+        if (Math.random() > 0.7 ) {
+            const trailGeometry = new THREE.SphereGeometry(0.5, 8, 8);
+            const trailMaterial = new THREE.MeshBasicMaterial({ 
+                color: fireball.isTankProjectile ? 0xFF6600 : 0x00ffff,
+                transparent: true,
+                opacity: 0.7
+            });
+            const trail = new THREE.Mesh(trailGeometry, trailMaterial);
+            trail.position.copy(fireball.mesh.position);
+            scene.add(trail);
+            
+            // Remove trail after short time
+            setTimeout(() => {
+                scene.remove(trail);
+            }, 300);
+        }
+        
+        // Check for collision with player
+        if (spaceship && isPlayerAlive && !isGameOver) {
+            const distance = fireball.mesh.position.distanceTo(spaceship.position);
+            if (distance < 5) {
+                // Hit player!
+                createExplosion(spaceship.position, true);
+                playerHealth = Math.max(0, playerHealth - 10);
+                updateHealthBar();
+                
+                // Remove the fireball
+                scene.remove(fireball.mesh);
+                return false;
+            }
+        }
+        
+        return true;
+    });
 }
 
 // Add collision detection for tanks vs player fireballs
@@ -1044,6 +1631,9 @@ function shootFireball() {
 
 // Spawn enemy ship with depth-based coloring
 function spawnEnemy(isIntelligent = false) {
+
+if (disableEnemies) return;
+
     if (!spaceshipModel) return; // Add this check
 
     const enemy = spaceshipModel.clone();
@@ -1446,6 +2036,7 @@ function displayGameOver() {
     accuracyValue.textContent = accuracyPercentage + '%';
     accuracyValue.style.fontWeight = 'bold';
 
+
     // Add metrics to the container
     metricsContainer.appendChild(scoreMetric);
     metricsContainer.appendChild(scoreValue);
@@ -1611,6 +2202,8 @@ function init() {
     optimizeForMobile();
 
     initializeGameMetrics();
+
+    initBombSystem();
 
 
     // Set up event listeners
@@ -1799,52 +2392,10 @@ function animate() {
         }
     }
 
-    // Update enemy fireballs
-    enemyFireballs = enemyFireballs.filter(fireball => {
-        const age = now - fireball.createdAt;
-        if (age > 2000) {
-            scene.remove(fireball.mesh);
-            return false;
-        }
+    // Update enemy fireballs (including tank projectiles)
+updateEnemyFireballs();
 
-        // Move fireball towards the player (reduced from 4.5 to 3.15 - 30% slower)
-        fireball.mesh.position.z += 3.15;
-
-        // Add some trail/glow effect for enemy fireballs
-        if (Math.random() > 0.7) {
-            const trailGeometry = new THREE.SphereGeometry(0.5, 8, 8);
-            const trailMaterial = new THREE.MeshBasicMaterial({
-                color: 0x00ffff,
-                transparent: true,
-                opacity: 0.7
-            });
-            const trail = new THREE.Mesh(trailGeometry, trailMaterial);
-            trail.position.copy(fireball.mesh.position);
-            scene.add(trail);
-
-            // Remove trail after short time
-            setTimeout(() => {
-                scene.remove(trail);
-            }, 300);
-        }
-
-        // Check for collision with player
-        if (spaceship && isPlayerAlive && !isGameOver) {
-            const distance = fireball.mesh.position.distanceTo(spaceship.position);
-            if (distance < 5) {
-                // Hit player!
-                createExplosion(spaceship.position, true);
-                playerHealth = Math.max(0, playerHealth - 10);
-                updateHealthBar();
-
-                // Remove the fireball
-                scene.remove(fireball.mesh);
-                return false;
-            }
-        }
-
-        return true;
-    });
+updateBombs();
 
     // Increase player health over time (1 point per second) if not game over
     if (!isGameOver && now - lastHealthIncreaseTime > 1000 && playerHealth < 60) {
@@ -1860,7 +2411,7 @@ function animate() {
     }
 
     // Spawn new enemies
-    if (Math.random() < 0.02) {  // 2% chance each frame
+    if (Math.random() < enemySpawnRate) {  // x% chance each frame
         spawnEnemy();
     }
 
@@ -1875,8 +2426,145 @@ function animate() {
     ;
 
 
+    renderer.render(scene, camera);
+}
 
-    // Add this function to your code
+
+
+// Calculate and update game metrics periodically
+function updateGameMetrics() {
+    if (isGameOver) return;
+    
+    // Update game time
+    gameTime = Date.now() - gameStartTime;
+    
+    // Calculate accuracy
+    let totalFired = fireballsFired + bombsFired;
+    if (totalFired > 0) {
+        accuracyPercentage = Math.round(((enemiesKilled +bombsHit)/ totalFired) * 100);
+    } else {
+        accuracyPercentage = 0;
+    }
+}
+
+// Add this function to create tank fireballs
+function tankShootFireball(tank) {
+    // Get the turret object from the tank's userData
+    const turret = tank.userData.turret;
+    if (!turret) return;
+
+    const barrelGroup = turret.children.find(child => child.children && child.children.some(c => c.geometry && c.geometry.type === "CylinderGeometry"));
+    if (!barrelGroup) return;
+    
+    // Create the fireball
+    const geometry = new THREE.SphereGeometry(0.8, 16, 16);
+    const material = new THREE.MeshBasicMaterial({ color: 0xFF8800 }); // Orange color for tank fireballs
+    const fireball = new THREE.Mesh(geometry, material);
+    
+    // Position the fireball at the end of the barrel
+    // Get barrel length (adjust based on your model)
+    const barrelLength = 26.5;
+    
+    // Create a position vector for the fireball at the end of the barrel
+    // We need to apply all the nested transformations
+    
+    // Start with barrel's rotation and position within the barrelGroup
+    const worldPosition = new THREE.Vector3();
+    const worldQuaternion = new THREE.Quaternion();
+    
+    // Get the barrel's world position and rotation
+    barrelGroup.getWorldPosition(worldPosition);
+    barrelGroup.getWorldQuaternion(worldQuaternion);
+    
+    // Create direction vector pointing along barrel axis (Z for cylinder)
+    const direction = new THREE.Vector3(0, 0, 1);
+    direction.applyQuaternion(worldQuaternion);
+    
+    // Place fireball at end of barrel
+    fireball.position.copy(worldPosition);
+    fireball.position.add(direction.multiplyScalar(barrelLength / 2));
+    
+    // Add glow effect
+    const glowGeometry = new THREE.SphereGeometry(1.2, 26, 26);
+    const glowMaterial = new THREE.MeshBasicMaterial({
+        color: 0xFF6600,
+        transparent: true,
+        opacity: 0.8
+    });
+    const glow = new THREE.Mesh(glowGeometry, glowMaterial);
+    fireball.add(glow);
+    
+    // Add muzzle flash effect
+    createMuzzleFlash(worldPosition, direction);
+    
+    // Store the direction for movement
+    fireball.userData.direction = direction.clone();
+    
+    // Store the tank that fired this projectile to avoid self-collision
+    fireball.userData.parentTankId = tank.id;
+    
+    // Add fireball to the scene
+    scene.add(fireball);
+    
+    // Add to enemyFireballs array
+    enemyFireballs.push({
+        mesh: fireball,
+        createdAt: Date.now(),
+        direction: direction,
+        isTankProjectile: true,
+        parentTankId: tank.id
+    });
+}
+
+// Create muzzle flash effect
+function createMuzzleFlash(position, direction) {
+    const flashGroup = new THREE.Group();
+    
+    // Create the flash cone
+    const flashGeometry = new THREE.ConeGeometry(1.5, 3, 8);
+    const flashMaterial = new THREE.MeshBasicMaterial({
+        color: 0xFFDD00,
+        transparent: true,
+        opacity: 0.8
+    });
+    
+    const flash = new THREE.Mesh(flashGeometry, flashMaterial);
+    
+    // Position and orient the flash
+    flash.position.copy(position);
+    
+    // Look in the direction of fire
+    const lookAt = new THREE.Vector3().copy(position).add(direction);
+    flash.lookAt(lookAt);
+    
+    // Rotate 90 degrees to align with direction
+    flash.rotateX(Math.PI / 2);
+    
+    flashGroup.add(flash);
+    scene.add(flashGroup);
+    
+    // Animate the flash
+    let scale = 1.0;
+    const animate = function() {
+        scale -= 0.1;
+        if (scale <= 0) {
+            scene.remove(flashGroup);
+            return;
+        }
+        
+        flash.scale.set(scale, scale, scale);
+        flash.material.opacity -= 0.1;
+        
+        requestAnimationFrame(animate);
+    };
+    
+    animate();
+    
+    return flashGroup;
+}
+
+
+    
     function updateRocks() {
         // Count rocks to remove
         let rocksRemoved = 0;
@@ -1921,8 +2609,23 @@ function animate() {
     }
 
 
-    renderer.render(scene, camera);
-}
+function addTankFiringProperties(tank) {
+    // Add firing-related properties
+    tank.userData.lastFireTime = Date.now() - (Math.random() * 2000); // Random initial delay
+    
+    // Add a reference to the barrel group for easier access when firing
+    const turret = tank.userData.turret;
+    if (turret) {
+        // Find the barrel group among turret children
+        const barrelGroups = turret.children.filter(child => 
+            child.children && child.children.some(c => 
+                c.geometry && c.geometry.type === "CylinderGeometry"));
+                
+        if (barrelGroups.length > 0) {
+            tank.userData.barrelGroup = barrelGroups[0];
+        }
+    }
+ }
 
 // Handle window resizing
 window.addEventListener('resize', function () {
