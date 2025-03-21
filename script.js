@@ -68,7 +68,7 @@ function dropBomb() {
     const bomb = createCustomBomb();
     
     // Scale bomb to appropriate size for the game
-    bomb.scale.set(1.2, 1.2, -1.2);
+    bomb.scale.set(1.2, 1.2, -1.2); 
     
     // Position the bomb below the spaceship
     bomb.position.copy(spaceship.position);
