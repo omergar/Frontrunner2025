@@ -2089,6 +2089,7 @@ function displayGameOver() {
     if (isMobileDevice) {
         if (touchControls) touchControls.style.display = 'none';
         if (fireButton) fireButton.style.display = 'none';
+        if (bombButton) bombButton.style.display = 'none';
     }
 }
 
