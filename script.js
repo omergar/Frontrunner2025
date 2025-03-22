@@ -62,7 +62,7 @@ function dropBomb() {
     lastBombTime = now;
     
     // Count bomb as a shot fired for overall accuracy
-    fireballsFired++;
+    bombsFired++;
     
     // Create the custom bomb with fins
     const bomb = createCustomBomb();
@@ -522,6 +522,7 @@ function initializeGameMetrics() {
     gameTime = 0;
     enemiesKilled = 0;
     fireballsFired = 0;
+    bombsFired = 0;
     accuracyPercentage = 0;
 }
 
